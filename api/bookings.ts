@@ -1,16 +1,34 @@
+import { createClient } from '@libsql/client/web';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { handleCors } from './lib/cors';
-import turso from './lib/turso';
+
+function getTurso() {
+  const url = process.env.TURSO_DATABASE_URL;
+  const authToken = process.env.TURSO_AUTH_TOKEN;
+  if (!url) throw new Error('TURSO_DATABASE_URL is missing');
+  return createClient({ url, authToken });
+}
+
+function handleCors(req: VercelRequest, res: VercelResponse): boolean {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return true;
+  }
+  return false;
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (handleCors(req, res)) return;
 
   try {
+    const turso = getTurso();
     if (req.method === 'GET') {
       const result = await turso.execute(
         'SELECT id, user_id, user_name, booked_by, facility_id, facility_name, slot_id, date, start_time, end_time, time, status, created_at, updated_at FROM bookings ORDER BY created_at DESC'
       );
-      const bookings = result.rows.map(row => ({
+      const bookings = result.rows.map((row) => ({
         id: row.id as string,
         userId: row.user_id as string,
         userName: row.user_name as string,
@@ -66,7 +84,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         },
       ];
 
-      // Adjust slot status based on booking status transition
       if (slotId && facilityId) {
         if (status === 'Cancelled' || status === 'Completed') {
           statements.push({
@@ -86,9 +103,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     return res.status(405).json({ error: 'Method not allowed' });
-  } catch (err) {
+  } catch (err: unknown) {
     console.error('/api/bookings error:', err);
-    return res.status(500).json({ error: 'Internal server error' });
+    return res.status(500).json({
+      error: 'Internal server error',
+      details: err instanceof Error ? err.message : String(err),
+    });
   }
 }
-

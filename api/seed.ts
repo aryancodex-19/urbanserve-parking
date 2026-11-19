@@ -1,6 +1,23 @@
+import { createClient } from '@libsql/client/web';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { handleCors } from './lib/cors';
-import turso from './lib/turso';
+
+function getTurso() {
+  const url = process.env.TURSO_DATABASE_URL;
+  const authToken = process.env.TURSO_AUTH_TOKEN;
+  if (!url) throw new Error('TURSO_DATABASE_URL is missing');
+  return createClient({ url, authToken });
+}
+
+function handleCors(req: VercelRequest, res: VercelResponse): boolean {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return true;
+  }
+  return false;
+}
 
 export const FACILITIES_SEED = [
   {
@@ -117,6 +134,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    const turso = getTurso();
+
     // 1. Create Tables
     await turso.executeMultiple(`
       CREATE TABLE IF NOT EXISTS facilities (
@@ -191,10 +210,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       );
     `);
 
-    // 2. Clear old demo data if requested or seed initial data
+    // 2. Seed initial data
     const batchStatements: Array<{ sql: string; args: unknown[] }> = [];
 
-    // Seed facilities
     for (const fac of FACILITIES_SEED) {
       batchStatements.push({
         sql: `INSERT OR REPLACE INTO facilities (id, name, address, lat, lng, total_slots, rate, zones)
@@ -211,7 +229,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ],
       });
 
-      // Seed slots for facility
       fac.zones.forEach((zone) => {
         for (let i = 1; i <= zone.count; i++) {
           const slotId = `${zone.prefix}${i.toString().padStart(2, '0')}`;
@@ -220,7 +237,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           if (rand > 0.8) status = 'maintenance';
           else if (rand > 0.35) status = 'occupied';
 
-          // Ensure A02 at kanakia-road starts occupied for initial demo booking
           if (fac.id === 'kanakia-road' && slotId === 'A02') {
             status = 'occupied';
           }
@@ -234,7 +250,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // Seed initial booking
     const today = new Date().toISOString().split('T')[0];
     batchStatements.push({
       sql: `INSERT OR REPLACE INTO bookings (id, user_id, user_name, booked_by, facility_id, facility_name, slot_id, date, start_time, end_time, time, status, created_at, updated_at)
@@ -257,7 +272,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ],
     });
 
-    // Seed initial issues
     const defaultIssues = [
       {
         id: 'ISS-001',
@@ -296,7 +310,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // Seed initial usage records
     const defaultUsage = [
       { date: today, time: '10:00', occupied: 22, available: 23, percent: 49 },
       { date: today, time: '13:00', occupied: 32, available: 13, percent: 71 },
@@ -310,7 +323,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // Seed initial activity
     batchStatements.push({
       sql: `INSERT OR REPLACE INTO activities (id, description, timestamp)
             VALUES (?, ?, ?)`,
@@ -332,4 +344,3 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 }
-

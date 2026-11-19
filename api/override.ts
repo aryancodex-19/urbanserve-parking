@@ -1,6 +1,23 @@
+import { createClient } from '@libsql/client/web';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { handleCors } from './lib/cors';
-import turso from './lib/turso';
+
+function getTurso() {
+  const url = process.env.TURSO_DATABASE_URL;
+  const authToken = process.env.TURSO_AUTH_TOKEN;
+  if (!url) throw new Error('TURSO_DATABASE_URL is missing');
+  return createClient({ url, authToken });
+}
+
+function handleCors(req: VercelRequest, res: VercelResponse): boolean {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return true;
+  }
+  return false;
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (handleCors(req, res)) return;
@@ -10,12 +27,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    const turso = getTurso();
     const b = req.body;
     if (!b.facilityId || !b.slotId) {
       return res.status(400).json({ error: 'facilityId and slotId are required' });
     }
 
-    // Insert the operator booking and update slot atomically
     await turso.batch(
       [
         {
@@ -37,9 +54,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     return res.status(201).json({ success: true });
-  } catch (err) {
+  } catch (err: unknown) {
     console.error('/api/override error:', err);
-    return res.status(500).json({ error: 'Internal server error' });
+    return res.status(500).json({
+      error: 'Internal server error',
+      details: err instanceof Error ? err.message : String(err),
+    });
   }
 }
-
