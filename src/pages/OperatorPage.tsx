@@ -38,6 +38,7 @@ import { OperatorSlotModal } from '../components/OperatorSlotModal';
 import { OperatorUsageModal } from '../components/OperatorUsageModal';
 import { OperatorIssueModal } from '../components/OperatorIssueModal';
 import { OperatorPinModal } from '../components/OperatorPinModal';
+import { ParkingFloorPlan } from '../components/ParkingFloorPlan';
 import { Toast } from '../components/Toast';
 import type { ParkingSlot, BookingStatus, IssueStatus } from '../types';
 
@@ -96,6 +97,7 @@ export const OperatorPage: React.FC = () => {
   // Slots view state
   const [slotSearch, setSlotSearch] = useState('');
   const [slotFilter, setSlotFilter] = useState('all');
+  const [slotsViewMode, setSlotsViewMode] = useState<'grid' | 'blueprint'>('grid');
   const [selectedSlot, setSelectedSlot] = useState<ParkingSlot | null>(null);
 
   // Activity log state
@@ -631,6 +633,23 @@ export const OperatorPage: React.FC = () => {
               </div>
             </div>
 
+            <div className="view-toggle-group">
+              <button
+                type="button"
+                className={`view-toggle-btn ${slotsViewMode === 'grid' ? 'active' : ''}`}
+                onClick={() => setSlotsViewMode('grid')}
+              >
+                ⊞ Grid View
+              </button>
+              <button
+                type="button"
+                className={`view-toggle-btn ${slotsViewMode === 'blueprint' ? 'active' : ''}`}
+                onClick={() => setSlotsViewMode('blueprint')}
+              >
+                🚗 Floor Plan
+              </button>
+            </div>
+
             <div className="legend-bar">
               <span className="legend-title">STATUS LEGEND</span>
               <div className="legend-items">
@@ -646,25 +665,31 @@ export const OperatorPage: React.FC = () => {
               </div>
             </div>
 
-            <div className="slot-grid">
-              {filteredSlots.map((slot) => (
-                <div
-                  key={slot.id}
-                  className={`slot-item slot-${slot.status}`}
-                  onClick={() => setSelectedSlot(slot)}
-                  style={{ cursor: 'pointer' }}
-                >
-                  <div className="slot-id">{slot.id}</div>
-                  <div className="slot-status-text">{slot.status}</div>
+            {slotsViewMode === 'grid' ? (
+              <>
+                <div className="slot-grid">
+                  {filteredSlots.map((slot) => (
+                    <div
+                      key={slot.id}
+                      className={`slot-item slot-${slot.status}`}
+                      onClick={() => setSelectedSlot(slot)}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      <div className="slot-id">{slot.id}</div>
+                      <div className="slot-status-text">{slot.status}</div>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
 
-            {filteredSlots.length === 0 && (
-              <div className="empty-state">
-                <Slash style={{ width: 36, height: 36, margin: '0 auto 0.5rem', opacity: 0.5 }} />
-                <p>No parking slots match your search.</p>
-              </div>
+                {filteredSlots.length === 0 && (
+                  <div className="empty-state">
+                    <Slash style={{ width: 36, height: 36, margin: '0 auto 0.5rem', opacity: 0.5 }} />
+                    <p>No parking slots match your search.</p>
+                  </div>
+                )}
+              </>
+            ) : (
+              <ParkingFloorPlan slots={filteredSlots} onSlotClick={setSelectedSlot} />
             )}
           </section>
         )}
