@@ -28,3 +28,11 @@ dist-ssr
 next-env.d.ts
 
 .vite/
+
+shell
+shell-wal
+auth
+auth-wal
+*.db
+*.db-wal
+

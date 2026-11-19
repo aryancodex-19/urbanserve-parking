@@ -21,6 +21,10 @@ import {
   generateSlotsForFacility,
   calculateStats,
 } from '../data/constants';
+import { apiClient } from '../lib/apiClient';
+
+// Feature Flag: fallback to LocalStorage if false or when backend is unreachable
+export const USE_REAL_DB = import.meta.env.VITE_USE_REAL_DB === 'true';
 
 interface ParkingContextType {
   facilities: Facility[];
@@ -58,11 +62,13 @@ interface ParkingContextType {
   isOperatorAuth: boolean;
   unlockOperator: (pin: string) => boolean;
   lockOperator: () => void;
+  isLoading?: boolean;
+  isDbConnected?: boolean;
 }
 
 const ParkingContext = createContext<ParkingContextType | undefined>(undefined);
 
-// Initializer helpers
+// Initializer helpers (Instant paint with LocalStorage / default values)
 function getInitialFacilitiesData(): FacilitiesDataMap {
   try {
     const raw = localStorage.getItem(KEYS.FACILITIES_DATA);
@@ -225,6 +231,8 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   });
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isDbConnected, setIsDbConnected] = useState<boolean>(false);
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
@@ -266,7 +274,7 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       localStorage.setItem(KEYS.PARKING_DATA, JSON.stringify(legacyData));
       localStorage.setItem('parkingData', JSON.stringify(legacyData));
 
-      // Broadcast channel
+      // Broadcast channel for local tabs
       if (typeof BroadcastChannel !== 'undefined') {
         try {
           const syncChannel = new BroadcastChannel('urbanserve_sync');
@@ -279,50 +287,170 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     []
   );
 
-  const logActivity = useCallback((description: string) => {
-    const act: Activity = {
-      id: Date.now(),
-      description,
-      timestamp: new Date().toISOString(),
+  // Initial load from real DB when USE_REAL_DB is enabled
+  useEffect(() => {
+    if (!USE_REAL_DB) return;
+
+    let isMounted = true;
+    const fetchDbData = async () => {
+      setIsLoading(true);
+      try {
+        const [facData, bks, iss, usage, acts, uNotifs, opNotifs] = await Promise.all([
+          apiClient.getFacilitiesData(),
+          apiClient.getBookings(),
+          apiClient.getIssues(),
+          apiClient.getUsageRecords(),
+          apiClient.getActivities(),
+          apiClient.getNotifications('user'),
+          apiClient.getNotifications('operator'),
+        ]);
+
+        if (!isMounted) return;
+
+        if (facData && Object.keys(facData).length > 0) {
+          setFacilitiesData(facData);
+          localStorage.setItem(KEYS.FACILITIES_DATA, JSON.stringify(facData));
+        }
+        if (Array.isArray(bks) && bks.length > 0) {
+          setBookings(bks);
+          localStorage.setItem(KEYS.BOOKINGS, JSON.stringify(bks));
+        }
+        if (Array.isArray(iss) && iss.length > 0) {
+          setIssues(iss);
+          localStorage.setItem(KEYS.ISSUES, JSON.stringify(iss));
+        }
+        if (Array.isArray(usage) && usage.length > 0) {
+          setUsageRecords(usage);
+          localStorage.setItem(KEYS.USAGE, JSON.stringify(usage));
+        }
+        if (Array.isArray(acts)) {
+          setActivities(acts);
+          localStorage.setItem(KEYS.ACTIVITIES, JSON.stringify(acts));
+        }
+        if (Array.isArray(uNotifs)) {
+          setUserNotifications(uNotifs);
+          localStorage.setItem(KEYS.USER_NOTIFICATIONS, JSON.stringify(uNotifs));
+        }
+        if (Array.isArray(opNotifs)) {
+          setOperatorNotifications(opNotifs);
+          localStorage.setItem(KEYS.OPERATOR_NOTIFICATIONS, JSON.stringify(opNotifs));
+        }
+
+        setIsDbConnected(true);
+      } catch (err) {
+        console.warn('Could not load initial data from DB, running on LocalStorage fallback:', err);
+        setIsDbConnected(false);
+      } finally {
+        if (isMounted) setIsLoading(false);
+      }
     };
-    setActivities((prev) => {
-      const updated = [act, ...prev.slice(0, 49)];
-      localStorage.setItem(KEYS.ACTIVITIES, JSON.stringify(updated));
-      return updated;
-    });
+
+    fetchDbData();
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
-  const addUserNotification = useCallback((type: string, title: string, message: string) => {
-    const notif: AppNotification = {
-      id: Date.now().toString(),
-      type,
-      title,
-      message,
-      timestamp: new Date().toISOString(),
-      read: false,
-    };
-    setUserNotifications((prev) => {
-      const updated = [notif, ...prev.slice(0, 49)];
-      localStorage.setItem(KEYS.USER_NOTIFICATIONS, JSON.stringify(updated));
-      return updated;
-    });
+  // Polling for cross-device / cross-tab DB sync (10s interval)
+  useEffect(() => {
+    if (!USE_REAL_DB) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const [facData, bks] = await Promise.all([
+          apiClient.getFacilitiesData(),
+          apiClient.getBookings(),
+        ]);
+
+        if (facData && Object.keys(facData).length > 0) {
+          setFacilitiesData(facData);
+          localStorage.setItem(KEYS.FACILITIES_DATA, JSON.stringify(facData));
+        }
+        if (Array.isArray(bks)) {
+          setBookings(bks);
+          localStorage.setItem(KEYS.BOOKINGS, JSON.stringify(bks));
+        }
+        setIsDbConnected(true);
+      } catch {
+        // Silently preserve offline / cached state
+      }
+    }, 10000);
+
+    return () => clearInterval(interval);
   }, []);
 
-  const addOperatorNotification = useCallback((type: string, title: string, message: string) => {
-    const notif: AppNotification = {
-      id: Date.now().toString(),
-      type,
-      title,
-      message,
-      timestamp: new Date().toISOString(),
-      read: false,
-    };
-    setOperatorNotifications((prev) => {
-      const updated = [notif, ...prev.slice(0, 49)];
-      localStorage.setItem(KEYS.OPERATOR_NOTIFICATIONS, JSON.stringify(updated));
-      return updated;
-    });
-  }, []);
+  const logActivity = useCallback(
+    (description: string) => {
+      const act: Activity = {
+        id: Date.now(),
+        description,
+        timestamp: new Date().toISOString(),
+      };
+      setActivities((prev) => {
+        const updated = [act, ...prev.slice(0, 49)];
+        localStorage.setItem(KEYS.ACTIVITIES, JSON.stringify(updated));
+        return updated;
+      });
+
+      if (USE_REAL_DB) {
+        apiClient.logActivity(act).catch((err) => {
+          console.warn('Failed to sync activity to DB:', err);
+        });
+      }
+    },
+    []
+  );
+
+  const addUserNotification = useCallback(
+    (type: string, title: string, message: string) => {
+      const notif: AppNotification = {
+        id: Date.now().toString(),
+        type,
+        title,
+        message,
+        timestamp: new Date().toISOString(),
+        read: false,
+      };
+      setUserNotifications((prev) => {
+        const updated = [notif, ...prev.slice(0, 49)];
+        localStorage.setItem(KEYS.USER_NOTIFICATIONS, JSON.stringify(updated));
+        return updated;
+      });
+
+      if (USE_REAL_DB) {
+        apiClient.createNotification(notif, 'user').catch((err) => {
+          console.warn('Failed to sync user notification to DB:', err);
+        });
+      }
+    },
+    []
+  );
+
+  const addOperatorNotification = useCallback(
+    (type: string, title: string, message: string) => {
+      const notif: AppNotification = {
+        id: Date.now().toString(),
+        type,
+        title,
+        message,
+        timestamp: new Date().toISOString(),
+        read: false,
+      };
+      setOperatorNotifications((prev) => {
+        const updated = [notif, ...prev.slice(0, 49)];
+        localStorage.setItem(KEYS.OPERATOR_NOTIFICATIONS, JSON.stringify(updated));
+        return updated;
+      });
+
+      if (USE_REAL_DB) {
+        apiClient.createNotification(notif, 'operator').catch((err) => {
+          console.warn('Failed to sync operator notification to DB:', err);
+        });
+      }
+    },
+    []
+  );
 
   const switchFacility = useCallback(
     (facId: string) => {
@@ -382,6 +510,12 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       } else if (newStatus === 'maintenance') {
         addOperatorNotification('maintenance_update', 'Maintenance Required', `Slot ${slotId} marked for maintenance.`);
       }
+
+      if (USE_REAL_DB) {
+        apiClient.updateSlotStatus(currentFacility.id, slotId, newStatus).catch((err) => {
+          console.warn('Failed to sync slot status to DB:', err);
+        });
+      }
     },
     [currentFacility, bookings, operatorNotifications, saveAll, logActivity, showToast, addOperatorNotification, addUserNotification]
   );
@@ -439,6 +573,12 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       logActivity(`Booking ${bookingId} created for Slot ${slotId} at ${currentFacility.name}`);
       showToast('Slot booked successfully!');
 
+      if (USE_REAL_DB) {
+        apiClient.createBooking(newBooking).catch((err) => {
+          console.warn('Failed to sync booking to DB:', err);
+        });
+      }
+
       return true;
     },
     [facilitiesData, currentFacility, currentUser, bookings, operatorNotifications, saveAll, addUserNotification, addOperatorNotification, logActivity, showToast]
@@ -476,6 +616,12 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       addUserNotification('booking_cancelled', 'Booking Cancelled', `Your booking for Slot ${booking.slotId} has been cancelled.`);
       addOperatorNotification('booking_cancelled', 'Booking Cancelled', `Booking ${bookingId} for Slot ${booking.slotId} was cancelled by ${currentUser}.`);
       showToast(`Booking ${bookingId} cancelled successfully!`);
+
+      if (USE_REAL_DB) {
+        apiClient.updateBookingStatus(bookingId, 'Cancelled', booking.slotId, targetFacId).catch((err) => {
+          console.warn('Failed to sync booking cancellation to DB:', err);
+        });
+      }
     },
     [bookings, currentFacility, currentUser, operatorNotifications, saveAll, logActivity, addUserNotification, addOperatorNotification, showToast]
   );
@@ -491,10 +637,11 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       );
       setBookings(updatedBookings);
 
+      const targetFacId = booking.facilityId || currentFacility.id;
+
       // Adjust slot status if active / completed / cancelled
       setFacilitiesData((prevFacData) => {
-        const facId = booking.facilityId || currentFacility.id;
-        const facSlots = prevFacData[facId]?.slots || [];
+        const facSlots = prevFacData[targetFacId]?.slots || [];
         const updatedSlots = facSlots.map((slot) => {
           if (slot.id !== booking.slotId) return slot;
           if (newStatus === 'Active') {
@@ -509,7 +656,7 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
         const newFacData = {
           ...prevFacData,
-          [facId]: {
+          [targetFacId]: {
             slots: updatedSlots,
             lastUpdated: new Date().toISOString(),
           },
@@ -529,6 +676,12 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
 
       showToast(`Booking ${bookingId} updated`);
+
+      if (USE_REAL_DB) {
+        apiClient.updateBookingStatus(bookingId, newStatus, booking.slotId, targetFacId).catch((err) => {
+          console.warn('Failed to sync booking status to DB:', err);
+        });
+      }
     },
     [bookings, currentFacility, operatorNotifications, saveAll, logActivity, addUserNotification, showToast]
   );
@@ -582,6 +735,12 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       logActivity(`Slot ${slotId} booked (Booking ${bookingId})`);
       showToast('Slot booked successfully!');
 
+      if (USE_REAL_DB) {
+        apiClient.operatorBookSlot(newBooking).catch((err) => {
+          console.warn('Failed to sync operator walk-in booking to DB:', err);
+        });
+      }
+
       return true;
     },
     [facilitiesData, currentFacility, bookings, operatorNotifications, saveAll, addOperatorNotification, logActivity, showToast]
@@ -607,6 +766,12 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       logActivity(`${type} issue reported at ${location}`);
       addOperatorNotification('maintenance_update', 'New Issue Reported', `A ${priority.toLowerCase()} priority issue reported at ${location}.`);
       showToast('Issue reported successfully');
+
+      if (USE_REAL_DB) {
+        apiClient.createIssue(newIssue).catch((err) => {
+          console.warn('Failed to sync issue to DB:', err);
+        });
+      }
     },
     [issues.length, logActivity, addOperatorNotification, showToast]
   );
@@ -631,6 +796,12 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       });
       logActivity(`Issue ${id} moved to ${newStatus}`);
       showToast(`Issue ${id} marked ${newStatus}`);
+
+      if (USE_REAL_DB) {
+        apiClient.updateIssueStatus(id, newStatus).catch((err) => {
+          console.warn('Failed to sync issue status to DB:', err);
+        });
+      }
     },
     [logActivity, showToast]
   );
@@ -651,6 +822,13 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       });
       logActivity(`Usage recorded: ${percent}% occupancy`);
       showToast('Usage record saved');
+
+      if (USE_REAL_DB) {
+        apiClient.createUsageRecord(newRecord).catch((err) => {
+          console.warn('Failed to sync usage record to DB:', err);
+        });
+      }
+
       return { success: true };
     },
     [stats.usable, logActivity, showToast]
@@ -662,6 +840,12 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       localStorage.setItem(KEYS.USER_NOTIFICATIONS, JSON.stringify(updated));
       return updated;
     });
+
+    if (USE_REAL_DB) {
+      apiClient.markAllNotificationsRead('user').catch((err) => {
+        console.warn('Failed to sync mark-all-read to DB:', err);
+      });
+    }
   }, []);
 
   const markUserNotificationRead = useCallback((id: string) => {
@@ -670,6 +854,12 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       localStorage.setItem(KEYS.USER_NOTIFICATIONS, JSON.stringify(updated));
       return updated;
     });
+
+    if (USE_REAL_DB) {
+      apiClient.markNotificationRead(id).catch((err) => {
+        console.warn('Failed to sync mark-read to DB:', err);
+      });
+    }
   }, []);
 
   const markAllOperatorNotificationsRead = useCallback(() => {
@@ -678,6 +868,12 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       localStorage.setItem(KEYS.OPERATOR_NOTIFICATIONS, JSON.stringify(updated));
       return updated;
     });
+
+    if (USE_REAL_DB) {
+      apiClient.markAllNotificationsRead('operator').catch((err) => {
+        console.warn('Failed to sync mark-all-read to DB:', err);
+      });
+    }
   }, []);
 
   const markOperatorNotificationRead = useCallback((id: string) => {
@@ -686,6 +882,12 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       localStorage.setItem(KEYS.OPERATOR_NOTIFICATIONS, JSON.stringify(updated));
       return updated;
     });
+
+    if (USE_REAL_DB) {
+      apiClient.markNotificationRead(id).catch((err) => {
+        console.warn('Failed to sync mark-read to DB:', err);
+      });
+    }
   }, []);
 
   const resetDemoData = useCallback(() => {
@@ -749,6 +951,12 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     localStorage.setItem(KEYS.ISSUES, JSON.stringify(defaultIssues));
     localStorage.setItem(KEYS.ACTIVITIES, JSON.stringify(defaultActs));
 
+    if (USE_REAL_DB) {
+      apiClient.resetDatabase().catch((err) => {
+        console.warn('Failed to reset DB data:', err);
+      });
+    }
+
     showToast('Demo data reset successful');
   }, [saveAll, showToast]);
 
@@ -783,7 +991,7 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     showToast('Dashboard locked');
   }, [showToast]);
 
-  // Sync across tabs via window 'storage' and BroadcastChannel
+  // Sync across tabs via window 'storage' and BroadcastChannel (preserves instant local sync)
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
       if (!event.key || event.key.includes('urbanserve') || event.key.includes('parking') || event.key.includes('booking')) {
@@ -877,6 +1085,8 @@ export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         isOperatorAuth,
         unlockOperator,
         lockOperator,
+        isLoading,
+        isDbConnected,
       }}
     >
       {children}
